@@ -1,15 +1,33 @@
 from shiny.express import input, render, ui
 from shiny import reactive
-from shiny.ui import output_text  # <-- explicit import (not re-exported in shiny.express.ui)
+#from shiny.ui import output_text  # <-- explicit import (not re-exported in shiny.express.ui)
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from shinywidgets import render_plotly
 import urllib.request, urllib.parse, json, ssl
 import numpy as np
-import shinyswatch
+#import shinyswatch
 
+import sys
+IS_WASM = sys.platform == "emscripten"
 
+# Link to manifest for native cache deployment
+ui.head_content(
+    # Web App Manifest (Chrome, Edge, Android)
+    ui.tags.link(rel="manifest", href="manifest.json"),
+    ui.tags.meta(name="theme-color", content="#0d6efd"),
+
+    # iOS Safari — uses its own proprietary tags (ignores manifest for install)
+    ui.tags.meta(name="apple-mobile-web-app-capable", content="yes"),
+    ui.tags.meta(name="apple-mobile-web-app-status-bar-style",
+                 content="black-translucent"),
+    ui.tags.meta(name="apple-mobile-web-app-title", content="IPC RAT"),
+    ui.tags.link(rel="apple-touch-icon", href="icon-192.png"),
+
+    # Prevents iOS from trying to phone-link numbers in scores
+    ui.tags.meta(name="format-detection", content="telephone=no"),
+)
 
 # =============================================================
 #                       GLOBAL THRESHOLDS
@@ -835,11 +853,63 @@ def component_labels() -> dict:
         lang = "en"
     return COMPONENT_LABELS_I18N.get(lang, COMPONENT_LABELS_I18N["en"])
 
+async def fetch_kobo_data_wasm(server_url, asset_uid, token, page_size=30000):
+    """Fetch KoboToolbox data using the browser's native fetch API (Pyodide only)."""
+    import js
+    from pyodide.ffi import to_js
+
+    server_url = server_url.rstrip("/")
+    url = (f"{server_url}/api/v2/assets/{asset_uid}"
+           f"/data.json?format=json&limit={page_size}")
+    out = []
+    page = 0
+
+    while url:
+        page += 1
+        options = to_js(
+            {
+                "method": "GET",
+                "headers": {
+                    "Authorization": f"Token {token}",
+                    "Accept": "application/json",
+                },
+            },
+            dict_converter=js.Object.fromEntries,
+        )
+
+        try:
+            response = await js.fetch(url, options)
+        except Exception as e:
+            msg = str(e).lower()
+            if any(w in msg for w in ("cors", "fetch", "network", "failed")):
+                raise Exception(
+                    "CORS blocked — the KoboToolbox server must allow browser requests. "
+                    "Public instances (kf.kobotoolbox.org, kobo.humanitarianresponse.info) "
+                    "support this. For private instances, ask your admin to enable CORS."
+                )
+            raise Exception(f"Network error: {e}")
+
+        status = int(response.status)
+        if not response.ok:
+            raise Exception({
+                401: "Authentication failed — check your API token.",
+                403: "Permission denied — verify your token and asset UID.",
+                404: "Asset not found — check your asset UID.",
+            }.get(status, f"Server error: HTTP {status}"))
+
+        text = await response.text()
+        payload = json.loads(text)
+        out.extend(payload.get("results", []))
+        url = payload.get("next")  # KoboToolbox paginates via 'next'
+
+    return pd.json_normalize(out) if out else pd.DataFrame()
+
 # =============================================================
 #                           REACTIVES
 # =============================================================
 kobo_data           = reactive.value(None)
 kobo_status_msg     = reactive.value(None)
+kobo_cors_msg = reactive.value(None)
 custom_csv_raw      = reactive.value(None)
 custom_csv_mapped   = reactive.value(None)
 mapping_status_msg  = reactive.value(None)
@@ -902,21 +972,78 @@ def _apply_mapping():
 
 @reactive.effect
 @reactive.event(input.kobo_fetch)
-def _fetch_kobo():
-    url   = (input.kobo_url() or "").strip()
+async def _fetch_kobo():
+    url   = (input.kobo_url()   or "").strip()
     asset = (input.kobo_asset() or "").strip()
     token = (input.kobo_token() or "").strip()
     if not (url and asset and token):
-        kobo_status_msg.set(("err", "Fill in all Kobo fields.")); return
-    kobo_status_msg.set(("info", "⏳ Fetching..."))
+        kobo_status_msg.set(("err", "Fill in all Kobo fields."))
+        return
+    kobo_status_msg.set(("info", "⏳ Fetching…"))
     try:
-        df = fetch_kobo_data(url, asset, token)
+        if IS_WASM:
+            df = await fetch_kobo_data_wasm(url, asset, token)
+        else:
+            df = fetch_kobo_data(url, asset, token)   # existing synchronous path
         if df.empty:
-            kobo_status_msg.set(("err", "No records returned.")); kobo_data.set(None); return
+            kobo_status_msg.set(("err", "No records returned."))
+            kobo_data.set(None)
+            return
         kobo_data.set(df)
         kobo_status_msg.set(("ok", f"✅ Loaded {len(df):,} records."))
     except Exception as e:
-        kobo_status_msg.set(("err", f"Error: {e}")); kobo_data.set(None)
+        kobo_status_msg.set(("err", str(e)))
+        kobo_data.set(None)
+
+
+@reactive.effect
+@reactive.event(input.kobo_cors_check)
+async def _kobo_cors_check():
+    """Quick preflight to test if the Kobo server allows browser requests."""
+    url   = (input.kobo_url()   or "").strip()
+    asset = (input.kobo_asset() or "").strip()
+    token = (input.kobo_token() or "").strip()
+    if not (url and asset and token):
+        kobo_cors_msg.set(("err", "Fill in all fields before testing."))
+        return
+    if not IS_WASM:
+        kobo_cors_msg.set(("info", "CORS test only applies to the browser-hosted version."))
+        return
+
+    kobo_cors_msg.set(("info", "⏳ Testing connection…"))
+    import js
+    from pyodide.ffi import to_js
+    test_url = (f"{url.rstrip('/')}/api/v2/assets/{asset}"
+                f"/data.json?format=json&limit=1")
+    try:
+        options = to_js(
+            {"method": "GET",
+             "headers": {"Authorization": f"Token {token}", "Accept": "application/json"}},
+            dict_converter=js.Object.fromEntries,
+        )
+        response = await js.fetch(test_url, options)
+        status = int(response.status)
+        if response.ok:
+            kobo_cors_msg.set(("ok",
+                f"✅ Connection successful (HTTP {status}) — "
+                "this server supports browser requests."))
+        elif status == 401:
+            kobo_cors_msg.set(("err", "⚠️ Reachable but token rejected (HTTP 401). "
+                                      "CORS is working — check your API token."))
+        elif status == 404:
+            kobo_cors_msg.set(("err", "⚠️ Reachable but asset not found (HTTP 404). "
+                                      "CORS is working — check your asset UID."))
+        else:
+            kobo_cors_msg.set(("err", f"⚠️ Reachable — HTTP {status}."))
+    except Exception as e:
+        msg = str(e).lower()
+        if any(w in msg for w in ("cors", "network", "failed", "fetch")):
+            kobo_cors_msg.set(("err",
+                "❌ CORS blocked — this server does not allow browser requests. "
+                "Contact your KoboToolbox admin to enable CORS, or download "
+                "data manually and use CSV upload."))
+        else:
+            kobo_cors_msg.set(("err", f"Connection error: {e}"))
 
 
 @reactive.calc
@@ -1507,6 +1634,18 @@ with ui.sidebar(width=380, open="open"):
                 ui.input_password("kobo_token", "API Token")
                 ui.input_action_button("kobo_fetch", "🚀 Fetch Data",
                                        class_="btn-primary w-100")
+                
+                ui.input_action_button(                
+                    "kobo_cors_check", "🔍 Test Connection",                
+                    class_="btn-outline-secondary btn-sm w-100 mb-2",            
+                    )            
+                
+                @render.ui            
+                def kobo_cors_result():                
+                    msg = kobo_cors_msg.get()                
+                    if not msg: return None                
+                    cls = {"ok":"success","err":"danger","info":"info"}.get(msg[0],"info")                
+                    return ui.div(msg[1], class_=f"alert alert-{cls} mt-1 p-2 small")
 
                 @render.ui
                 def kobo_status():
