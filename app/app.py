@@ -963,15 +963,18 @@ async def _fetch_partition_bytes(url: str):
 
 def _decrypt_partition(blob: bytes, passphrase: str) -> str:
     """PBKDF2 → AES-256-GCM decrypt → gunzip.
-    Binary format must match scripts/fetch_kobo.py:
-    16B salt | 12B nonce | ciphertext(+tag)."""
-    import hashlib, gzip as _gz
+    Exact mirror of encrypt() in scripts/fetch_kobo.py:
+    16B salt | 12B nonce | ciphertext(+tag), PBKDF2-SHA256 @ 200k iterations."""
+    import gzip as _gz
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     from cryptography.exceptions import InvalidTag
 
     salt, nonce, ct = blob[:16], blob[16:28], blob[28:]
-    key = hashlib.pbkdf2_hmac("sha256", passphrase.encode("utf-8"),
-                              salt, 200_000, dklen=32)
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32,
+                     salt=salt, iterations=200_000)
+    key = kdf.derive(passphrase.encode("utf-8"))
     try:
         plaintext = AESGCM(key).decrypt(nonce, ct, None)
     except InvalidTag:
