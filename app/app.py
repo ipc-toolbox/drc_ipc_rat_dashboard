@@ -934,6 +934,50 @@ async def fetch_kobo_data_wasm(server_url, asset_uid, token, page_size=30000):
 
     return pd.json_normalize(out) if out else pd.DataFrame()
 
+# ── Encrypted partition loading (runs inside the Pyodide worker) ─────────
+async def _fetch_partition_bytes(url: str):
+    """Fetch the .enc blob. Saves a copy in the Cache API for offline use;
+    falls back to that copy when the network is unavailable.
+    Returns (blob_bytes, from_cache)."""
+    import js
+    cache = await js.caches.open("ipc-rat-partitions")
+    try:
+        resp = await js.fetch(url)
+    except Exception:
+        # Network failure → try the offline cache
+        cached = await cache.match(url)
+        if not cached:
+            raise Exception("OFFLINE_NO_CACHE")
+        buf = await cached.arrayBuffer()
+        return bytes(js.Uint8Array.new(buf).to_py()), True
+
+    if not resp.ok:
+        raise Exception(
+            f"HTTP {int(resp.status)} — partition file not found. "
+            "Has the GitHub Action run successfully?"
+        )
+    await cache.put(url, resp.clone())        # store for offline use
+    buf = await resp.arrayBuffer()
+    return bytes(js.Uint8Array.new(buf).to_py()), False
+
+
+def _decrypt_partition(blob: bytes, passphrase: str) -> str:
+    """PBKDF2 → AES-256-GCM decrypt → gunzip.
+    Binary format must match scripts/fetch_kobo.py:
+    16B salt | 12B nonce | ciphertext(+tag)."""
+    import hashlib, gzip as _gz
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.exceptions import InvalidTag
+
+    salt, nonce, ct = blob[:16], blob[16:28], blob[28:]
+    key = hashlib.pbkdf2_hmac("sha256", passphrase.encode("utf-8"),
+                              salt, 200_000, dklen=32)
+    try:
+        plaintext = AESGCM(key).decrypt(nonce, ct, None)
+    except InvalidTag:
+        raise Exception("WRONG_PASSPHRASE")
+    return _gz.decompress(plaintext).decode("utf-8")
+
 # =============================================================
 #                           REACTIVES
 # =============================================================
@@ -1247,15 +1291,15 @@ async def _load_kobo_sync():
 
     kobo_sync_msg.set(("info", "⏳ Loading and decrypting…"))
     try:
-        import js, io
-        url    = f"{SYNC_BASE_URL}/{part}.enc"
-        result = json.loads(await js.loadEncryptedPartition(url, pw, part))
+        import io
+        blob, from_cache = await _fetch_partition_bytes(
+            f"{SYNC_BASE_URL}/{part}.enc")
+        text = _decrypt_partition(blob, pw)
 
-        # Parse CSV text (fresh buffer per delimiter attempt)
         df = None
         for sep in [",", ";", "\t"]:
             try:
-                tmp = pd.read_csv(io.StringIO(result["text"]), sep=sep)
+                tmp = pd.read_csv(io.StringIO(text), sep=sep)
                 if tmp.shape[1] > 1:
                     df = tmp
                     break
@@ -1265,11 +1309,10 @@ async def _load_kobo_sync():
             raise Exception("Decrypted file is empty or unreadable.")
 
         kobo_data.set(df)   # raw_data() applies _coerce
-        if result.get("fromCache"):
-            saved = (result.get("savedAt") or "")[:16].replace("T", " ")
+        if from_cache:
             kobo_sync_msg.set(("info",
-                f"📴 Offline — loaded cached data from {saved}. "
-                f"{len(df):,} records. Reconnect to refresh."))
+                f"📴 Offline — loaded cached data. {len(df):,} records. "
+                "Reconnect to refresh."))
         else:
             kobo_sync_msg.set(("ok", f"✅ Loaded {len(df):,} records ({part})."))
 
@@ -1657,56 +1700,6 @@ body { font-family: 'Inter', sans-serif; background: #f5f7fa; }
 
 """)
 
-ui.tags.script("""
-// ── Encrypted partition loader with offline cache ──────────────────────
-function bufToB64(buf) {
-    let binary = '';
-    const CHUNK = 0x8000;
-    for (let i = 0; i < buf.length; i += CHUNK) {
-        binary += String.fromCharCode.apply(null, buf.subarray(i, i + CHUNK));
-    }
-    return btoa(binary);
-}
-
-window.loadEncryptedPartition = async function(url, passphrase, partName) {
-    let buf, fromCache = false;
-    try {
-        const resp = await fetch(url, { cache: 'no-store' });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        buf = new Uint8Array(await resp.arrayBuffer());
-        try {
-            localStorage.setItem('ipc_enc_' + partName, bufToB64(buf));
-            localStorage.setItem('ipc_enc_' + partName + '_saved',
-                                 new Date().toISOString());
-        } catch(e) { /* storage full — non-fatal */ }
-    } catch(netErr) {
-        const cached = localStorage.getItem('ipc_enc_' + partName);
-        if (!cached) throw new Error('OFFLINE_NO_CACHE');
-        buf = Uint8Array.from(atob(cached), c => c.charCodeAt(0));
-        fromCache = true;
-    }
-
-    const salt = buf.slice(0, 16), iv = buf.slice(16, 28), ct = buf.slice(28);
-    const km  = await crypto.subtle.importKey(
-        'raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']);
-    const key = await crypto.subtle.deriveKey(
-        { name: 'PBKDF2', salt: salt, iterations: 200000, hash: 'SHA-256' },
-        km, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
-
-    let pt;
-    try {
-        pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: iv }, key, ct);
-    } catch(e) {
-        throw new Error('WRONG_PASSPHRASE');
-    }
-    const text = await new Response(
-        new Blob([pt]).stream().pipeThrough(new DecompressionStream('gzip'))
-    ).text();
-
-    const savedAt = localStorage.getItem('ipc_enc_' + partName + '_saved') || '';
-    return JSON.stringify({ text: text, fromCache: fromCache, savedAt: savedAt });
-};
-""")
 
 # =====================================================================
 #                              SIDEBAR (Accordion)

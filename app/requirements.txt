@@ -3,3 +3,5 @@ shinywidgets
 pandas
 plotly
 numpy
+plotly
+cryptography
