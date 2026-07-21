@@ -1,0 +1,61 @@
+name: Refresh Kobo Data
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'      # every 6 hours — adjust to assessment cadence
+  workflow_dispatch:             # manual trigger from the Actions tab
+
+permissions:
+  contents: write                # required to commit the .enc files back
+
+concurrency:
+  group: refresh-kobo
+  cancel-in-progress: false      # never kill a run mid-commit
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install pandas cryptography
+
+      - name: Fetch and encrypt all partitions
+        env:
+          # ── Server / asset ─────────────────────────────────────────
+          KOBO_URL:            ${{ vars.KOBO_SERVER_URL }}
+          KOBO_ASSET_UID:      ${{ secrets.KOBO_ASSET_UID }}
+          # ── Partition API tokens (row-level permissions in Kobo) ──
+          KOBO_TOKEN_NATIONAL: ${{ secrets.KOBO_TOKEN_NATIONAL }}
+          KOBO_TOKEN_ITURI:    ${{ secrets.KOBO_TOKEN_ITURI }}
+          KOBO_TOKEN_NORDKIVU: ${{ secrets.KOBO_TOKEN_NORDKIVU }}
+          KOBO_TOKEN_SUDKIVU:  ${{ secrets.KOBO_TOKEN_SUDKIVU }}
+          # ── Partition encryption passphrases ──────────────────────
+          DATA_PASS_NATIONAL:  ${{ secrets.DATA_PASS_NATIONAL }}
+          DATA_PASS_ITURI:     ${{ secrets.DATA_PASS_ITURI }}
+          DATA_PASS_NORDKIVU:  ${{ secrets.DATA_PASS_NORDKIVU }}
+          DATA_PASS_SUDKIVU:   ${{ secrets.DATA_PASS_SUDKIVU }}
+          # To add a partition: add 2 secrets above, 2 env lines here,
+          # one entry in partitions.json, and one entry in the app's
+          # SYNC_PARTITIONS dict.
+        run: python scripts/fetch_kobo.py
+
+      - name: Commit updated data
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if git diff --staged --quiet; then
+            echo "No data changes to commit."
+            exit 0
+          fi
+          git commit -m "🔄 Auto-refresh Kobo partitions $(date -u +'%Y-%m-%dT%H:%MZ') [skip ci]"
+          git pull --rebase origin ${{ github.ref_name }}
+          git push
