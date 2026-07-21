@@ -1,0 +1,22 @@
+[
+    {
+        "name": "national",
+        "token_env": "KOBO_TOKEN_NATIONAL",
+        "pass_env": "DATA_PASS_NATIONAL"
+    },
+    {
+        "name": "ituri",
+        "token_env": "KOBO_TOKEN_ITURI",
+        "pass_env": "DATA_PASS_ITURI"
+    },
+    {
+        "name": "nord-kivu",
+        "token_env": "KOBO_TOKEN_NORDKIVU",
+        "pass_env": "DATA_PASS_NORDKIVU"
+    },
+    {
+        "name": "sud-kivu",
+        "token_env": "KOBO_TOKEN_SUDKIVU",
+        "pass_env": "DATA_PASS_SUDKIVU"
+    }
+]
