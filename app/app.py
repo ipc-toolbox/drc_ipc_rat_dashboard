@@ -12,6 +12,17 @@ import numpy as np
 import sys
 IS_WASM = sys.platform == "emscripten"
 
+# ── Auto-synced encrypted partitions (GitHub Actions pipeline) ──# ⚠️ EDIT: point at your repo's data folder
+SYNC_BASE_URL = "https://raw.githubusercontent.com/<username>/<repo>/main/data"
+
+# Must match the "name" values in partitions.json
+SYNC_PARTITIONS = {    
+    "national":  "National (all provinces)",    
+    "ituri":     "Ituri",    
+    "nord-kivu": "Nord-Kivu",    
+    "sud-kivu":  "Sud-Kivu",
+    }
+
 # Link to manifest for native cache deployment
 ui.head_content(
     # Web App Manifest (Chrome, Edge, Android)
@@ -170,6 +181,12 @@ TRANSLATIONS = {
         "trend_flat": "➡️ Static",
         "start_date_label": "📅 Include data on/after",
 
+        "kobo_sync": "🔄 Kobo (Auto-synced)",
+        "sync_partition": "🗺️ Data Access Level",
+        "sync_passphrase": "🔑 Access Passphrase",
+        "sync_load": "📥 Load Data",
+        "sync_note": "Data refreshes automatically via a secure pipeline. Enter the passphrase provided by your coordinator.",
+
         
 
     },
@@ -297,6 +314,12 @@ TRANSLATIONS = {
         "trend_flat": "➡️ Stable",
         "start_date_label": "📅 Inclure les données à partir du",
 
+        "kobo_sync": "🔄 Kobo (Synchronisation auto)",
+        "sync_partition": "🗺️ Niveau d'accès aux données",
+        "sync_passphrase": "🔑 Phrase d'accès",
+        "sync_load": "📥 Charger les données",
+        "sync_note": "Les données sont actualisées automatiquement via un pipeline sécurisé. Saisissez la phrase d'accès fournie par votre coordinateur.",
+
         
 
     },
@@ -423,6 +446,12 @@ TRANSLATIONS = {
         "trend_down": "📉 En descenso",
         "trend_flat": "➡️ Estable",
         "start_date_label": "📅 Incluir datos desde",
+
+        "kobo_sync": "🔄 Kobo (Sincronización automática)",
+        "sync_partition": "🗺️ Nivel de acceso a datos",
+        "sync_passphrase": "🔑 Frase de acceso",
+        "sync_load": "📥 Cargar datos",
+        "sync_note": "Los datos se actualizan automáticamente mediante un canal seguro. Ingrese la frase de acceso proporcionada por su coordinador.",
 
     },
 }
@@ -909,6 +938,7 @@ async def fetch_kobo_data_wasm(server_url, asset_uid, token, page_size=30000):
 # =============================================================
 kobo_data           = reactive.value(None)
 kobo_status_msg     = reactive.value(None)
+kobo_sync_msg = reactive.value(None)
 kobo_cors_msg = reactive.value(None)
 custom_csv_raw      = reactive.value(None)
 custom_csv_mapped   = reactive.value(None)
@@ -973,6 +1003,12 @@ def _apply_mapping():
 @reactive.effect
 @reactive.event(input.kobo_fetch)
 async def _fetch_kobo():
+    if IS_WASM:
+        kobo_status_msg.set(("err",
+            "Live API fetch isn't available in the browser version "
+            "(the Kobo server blocks cross-origin requests). "
+            "Use '🔄 Kobo (Auto-synced)' instead."))
+        return
     url   = (input.kobo_url()   or "").strip()
     asset = (input.kobo_asset() or "").strip()
     token = (input.kobo_token() or "").strip()
@@ -1055,8 +1091,11 @@ def raw_data():
         return _coerce(df) if df is not None else None
     if input.source() == "csv_custom":
         return custom_csv_mapped.get()
-    df = kobo_data.get()
-    return _coerce(df.copy()) if (df is not None and not df.empty) else None
+    if input.source() in ("kobo", "kobo_sync"):          
+        # explicit        
+        df = kobo_data.get()        
+        return _coerce(df.copy()) if (df is not None and not df.empty) else None
+    return None
 
 @reactive.calc
 def latest_per_facility():
@@ -1191,6 +1230,60 @@ def _update_assessments():
     most_recent = str(len(sub) - 1)
     ui.update_selectize("detail_assessment", choices=choices, selected=most_recent)
 
+@reactive.effect
+@reactive.event(input.kobo_sync_load)
+async def _load_kobo_sync():
+    if not IS_WASM:
+        kobo_sync_msg.set(("err",
+            "Auto-synced data is only available in the deployed browser version. "
+            "Use CSV upload for local development."))
+        return
+    part = input.sync_partition()
+    pw   = (input.sync_passphrase() or "").strip()
+    if not pw:
+        kobo_sync_msg.set(("err", "Enter the access passphrase for your level."))
+        return
+
+    kobo_sync_msg.set(("info", "⏳ Loading and decrypting…"))
+    try:
+        import js, io
+        url    = f"{SYNC_BASE_URL}/{part}.enc"
+        result = json.loads(await js.loadEncryptedPartition(url, pw, part))
+
+        # Parse CSV text (fresh buffer per delimiter attempt)
+        df = None
+        for sep in [",", ";", "\t"]:
+            try:
+                tmp = pd.read_csv(io.StringIO(result["text"]), sep=sep)
+                if tmp.shape[1] > 1:
+                    df = tmp
+                    break
+            except Exception:
+                continue
+        if df is None or df.empty:
+            raise Exception("Decrypted file is empty or unreadable.")
+
+        kobo_data.set(df)   # raw_data() applies _coerce
+        if result.get("fromCache"):
+            saved = (result.get("savedAt") or "")[:16].replace("T", " ")
+            kobo_sync_msg.set(("info",
+                f"📴 Offline — loaded cached data from {saved}. "
+                f"{len(df):,} records. Reconnect to refresh."))
+        else:
+            kobo_sync_msg.set(("ok", f"✅ Loaded {len(df):,} records ({part})."))
+
+    except Exception as e:
+        msg = str(e)
+        if "WRONG_PASSPHRASE" in msg:
+            kobo_sync_msg.set(("err", "❌ Incorrect passphrase for this access level."))
+        elif "OFFLINE_NO_CACHE" in msg:
+            kobo_sync_msg.set(("err",
+                "📴 You're offline and no cached data exists on this device. "
+                "Connect once to download your partition."))
+        else:
+            kobo_sync_msg.set(("err", f"Error: {msg}"))
+        kobo_data.set(None)
+
 
 # ----- Reactive effect: re-translate all input labels & choices on language change
 @reactive.effect
@@ -1201,8 +1294,19 @@ def _retranslate_inputs():
         ui.update_radio_buttons("source", choices={
             "csv":        t("csv_standard"),
             "csv_custom": t("csv_custom"),
+            "kobo_sync":  t("kobo_sync"),
             "kobo":       t("kobo_api"),
         })
+    except Exception: pass
+    
+    try: ui.update_select("sync_partition", 
+    label=t("sync_partition"))    
+    except Exception: pass    
+    try: ui.update_text("sync_passphrase", 
+    label=t("sync_passphrase"))    
+    except Exception: pass    
+    try: ui.update_action_button("kobo_sync_load", 
+    label=t("sync_load"))    
     except Exception: pass
     try:
         ui.update_radio_buttons("x_axis", label=t("time_axis"), choices={
@@ -1552,6 +1656,57 @@ body { font-family: 'Inter', sans-serif; background: #f5f7fa; }
 
 """)
 
+ui.tags.script("""
+// ── Encrypted partition loader with offline cache ──────────────────────
+function bufToB64(buf) {
+    let binary = '';
+    const CHUNK = 0x8000;
+    for (let i = 0; i < buf.length; i += CHUNK) {
+        binary += String.fromCharCode.apply(null, buf.subarray(i, i + CHUNK));
+    }
+    return btoa(binary);
+}
+
+window.loadEncryptedPartition = async function(url, passphrase, partName) {
+    let buf, fromCache = false;
+    try {
+        const resp = await fetch(url, { cache: 'no-store' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        buf = new Uint8Array(await resp.arrayBuffer());
+        try {
+            localStorage.setItem('ipc_enc_' + partName, bufToB64(buf));
+            localStorage.setItem('ipc_enc_' + partName + '_saved',
+                                 new Date().toISOString());
+        } catch(e) { /* storage full — non-fatal */ }
+    } catch(netErr) {
+        const cached = localStorage.getItem('ipc_enc_' + partName);
+        if (!cached) throw new Error('OFFLINE_NO_CACHE');
+        buf = Uint8Array.from(atob(cached), c => c.charCodeAt(0));
+        fromCache = true;
+    }
+
+    const salt = buf.slice(0, 16), iv = buf.slice(16, 28), ct = buf.slice(28);
+    const km  = await crypto.subtle.importKey(
+        'raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+    const key = await crypto.subtle.deriveKey(
+        { name: 'PBKDF2', salt: salt, iterations: 200000, hash: 'SHA-256' },
+        km, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+
+    let pt;
+    try {
+        pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: iv }, key, ct);
+    } catch(e) {
+        throw new Error('WRONG_PASSPHRASE');
+    }
+    const text = await new Response(
+        new Blob([pt]).stream().pipeThrough(new DecompressionStream('gzip'))
+    ).text();
+
+    const savedAt = localStorage.getItem('ipc_enc_' + partName + '_saved') || '';
+    return JSON.stringify({ text: text, fromCache: fromCache, savedAt: savedAt });
+};
+""")
+
 # =====================================================================
 #                              SIDEBAR (Accordion)
 # =====================================================================
@@ -1575,6 +1730,7 @@ with ui.sidebar(width=380, open="open"):
                 {
                     "csv":        "📄 CSV Upload (Standard)",
                     "csv_custom": "🔧 CSV Upload (Custom Mapping)",
+                    "kobo_sync":  "🔄 Kobo (Auto-synced)",
                     "kobo":       "🌐 KoboToolbox API",
                 },
                 selected="csv",
@@ -1653,6 +1809,27 @@ with ui.sidebar(width=380, open="open"):
                     if not msg: return None
                     cls = {"ok":"success","err":"danger","info":"info"}.get(msg[0], "info")
                     return ui.div(msg[1], class_=f"alert alert-{cls} mt-2 p-2 small")
+
+            with ui.panel_conditional("input.source === 'kobo_sync'"):
+                ui.input_select("sync_partition", "🗺️ Data Access Level",
+                                SYNC_PARTITIONS)
+                ui.input_password("sync_passphrase", "🔑 Access Passphrase")
+                ui.input_action_button("kobo_sync_load", "📥 Load Data",
+                                       class_="btn-primary w-100 mt-2")
+
+                @render.ui
+                def kobo_sync_status():
+                    msg = kobo_sync_msg.get()
+                    if not msg: return None
+                    cls = {"ok":"success","err":"danger","info":"info"}.get(msg[0], "info")
+                    return ui.div(ui.HTML(msg[1]),
+                                  class_=f"alert alert-{cls} mt-2 p-2 small")
+
+                @render.ui
+                def kobo_sync_note():
+                    return ui.tags.small(t("sync_note"),
+                                         class_="text-muted d-block mt-2",
+                                         style="font-size:.78rem;")
 
         # ====================== View Controls ======================
         with ui.accordion_panel("🔍 View Controls"):
