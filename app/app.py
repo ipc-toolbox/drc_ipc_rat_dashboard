@@ -13,7 +13,8 @@ import sys
 IS_WASM = sys.platform == "emscripten"
 
 # ── Auto-synced encrypted partitions (GitHub Actions pipeline) ──# ⚠️ EDIT: point at your repo's data folder
-SYNC_BASE_URL = "https://raw.githubusercontent.com/<username>/<repo>/main/data"
+SYNC_BASE_URL = "https://raw.githubusercontent.com/smanninformatics/ipc_rat_dash/main/data"
+
 
 # Must match the "name" values in partitions.json
 SYNC_PARTITIONS = {    
