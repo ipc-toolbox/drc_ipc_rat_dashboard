@@ -75,6 +75,48 @@ def encrypt(data: bytes, passphrase: str) -> bytes:
     ct    = AESGCM(key).encrypt(nonce, data, None)   # ct includes GCM tag
     return salt + nonce + ct
 
+# Columns the app expects — used for post-normalization verification
+CORE_COLS = (["nom_etablissement", "date_evaluation", "score_pct"]
+             + [f"score_s{i}" for i in range(1, 18)])
+
+
+def normalize_kobo(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert Kobo API JSON shape → the app's CSV-export shape."""
+
+    # 1. Strip group prefixes: 'identification/nom_etablissement' → 'nom_etablissement'
+    rename = {}
+    for c in df.columns:
+        if "/" in c:
+            new = c.split("/")[-1]
+            # avoid collisions: keep the prefixed name if the short name exists
+            if new not in df.columns and new not in rename.values():
+                rename[c] = new
+    df = df.rename(columns=rename)
+
+    # 2. Build the GPS columns the app expects from _geolocation ([lat, lon])
+    if "_geolocation" in df.columns:
+        geo = df["_geolocation"].apply(
+            lambda v: v if isinstance(v, (list, tuple)) and len(v) == 2
+            else [None, None]
+        )
+        df["_coordonnees_gps_latitude"]  = geo.apply(lambda v: v[0])
+        df["_coordonnees_gps_longitude"] = geo.apply(lambda v: v[1])
+
+    # 3. Drop noisy metadata (keeps files small; app ignores unknowns anyway)
+    junk = [c for c in df.columns
+            if c in ("_geolocation", "_attachments", "_notes", "_tags",
+                     "_status", "__version__", "_xform_id_string",
+                     "instanceID", "deprecatedID", "uuid")
+            or c.startswith("_validation_status")]
+    df = df.drop(columns=junk, errors="ignore")
+
+    # 4. Verify the schema the app depends on — visible in the Action log
+    missing = [c for c in CORE_COLS if c not in df.columns]
+    if missing:
+        print(f"::warning::Expected columns missing after normalization: {missing}")
+        print(f"    Available columns: {sorted(df.columns.tolist())}")
+
+    return df
 
 # ── Main ─────────────────────────────────────────────────────────────────
 def main() -> int:
@@ -119,6 +161,7 @@ def main() -> int:
             continue
 
         df   = pd.json_normalize(records)
+        df   = normalize_kobo(df)
         csv  = df.to_csv(index=False).encode("utf-8")
         blob = encrypt(gzip.compress(csv, compresslevel=9), pw)
 
@@ -145,6 +188,7 @@ def main() -> int:
         print("::error::All partitions failed — nothing was updated.")
         return 1
     return 0
+
 
 
 if __name__ == "__main__":
