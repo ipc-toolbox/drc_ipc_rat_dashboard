@@ -553,6 +553,8 @@ FACILITY_COL  = "nom_etablissement"
 DATE_COL      = "date_evaluation"
 LATITUDE_COL  = "_coordonnees_gps_latitude"
 LONGITUDE_COL = "_coordonnees_gps_longitude"
+FACILITY_OTHER_COL = "nom_etablissement_autre"
+OTHER_VALUES = {"autre", "other", "autres", "others"}   # matched case-insensitively
 
 # NEW: geographic grouping columns
 DISTRICT_COL    = "district"
@@ -571,6 +573,8 @@ LEVEL_COL    = "niveau_installation"
 #                     HELPERS
 # =============================================================
 def _coerce(df):
+    df = _resolve_other_facilities(df)
+
     if DATE_COL in df.columns:
         df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
 
@@ -589,6 +593,30 @@ def _coerce(df):
             if pd.notna(raw_max) and raw_max <= max_score + 0.5:
                 df[col] = (df[col] / max_score * 100).round(1)
 
+    return df
+
+def _resolve_other_facilities(df):
+    """Where facility name is 'autre'/'other' and a free-text name exists,
+    replace it with 'Autre - <free text>' so each unlisted facility is unique
+    (and visibly flagged for follow-up). Idempotent: already-resolved names
+    no longer match OTHER_VALUES, so re-coercing is safe."""
+    if FACILITY_COL not in df.columns or FACILITY_OTHER_COL not in df.columns:
+        return df
+
+    fac      = df[FACILITY_COL].astype(str).str.strip()
+    is_other = fac.str.lower().isin(OTHER_VALUES)
+    if not is_other.any():
+        return df
+
+    # Light normalization of the free text so trivial variants don't split
+    names = (df[FACILITY_OTHER_COL].astype(str)
+               .str.strip()
+               .str.replace(r"\s+", " ", regex=True))
+    has_name = is_other & names.notna() & (names != "") & (names.str.lower() != "nan")
+
+    # Standardized prefix — NOT the original token, so 'Autre'/'other'/'AUTRE'
+    # rows for the same facility all produce the identical resolved name
+    df.loc[has_name, FACILITY_COL] = "Autre - " + names[has_name]
     return df
 
 def _read_csv_robust(path):
@@ -620,6 +648,8 @@ def fetch_kobo_data(server_url, asset_uid, token, page_size=30000):
 SUGGEST_KEYWORDS = {
     FACILITY_COL:  ["nom_etablissement", "etablissement", "facility_name",
                     "facility", "hospital", "structure", "site", "nom"],
+    FACILITY_OTHER_COL: ["nom_etablissement_autre", "etablissement_autre",
+                     "facility_other", "facility_name_other", "autre"],
     DATE_COL:      ["date_evaluation", "date_evaluation", "reporting_date",
                     "date"],
     SCORE_TOTAL:   ["score_pct", "score_pourcentage", "score_percent",
@@ -661,6 +691,7 @@ def best_match(target_key: str, columns: list[str]) -> str:
 
 MAP_TARGETS = [
     (FACILITY_COL,  "🏥 Facility Name (required)"),
+    (FACILITY_OTHER_COL, "🏥 Facility Name — Other (free text, optional)"),
     (DATE_COL,      "📅 Reporting Date (required)"),
     (PROVINCE_COL,    "🗺️ Province (optional)"),
     (DISTRICT_COL,    "🗺️ District (optional)"),      
@@ -1755,7 +1786,7 @@ with ui.sidebar(width=380, open="open"):
                             f"map__{target_key}", label,
                             choices=choices, selected=best_match(target_key, cols),
                         )
-                        if target_key in (FACILITY_COL, DATE_COL):
+                        if target_key in (FACILITY_COL, FACILITY_OTHER_COL, DATE_COL):
                             required_inputs.append(widget)
                         elif target_key == SCORE_TOTAL:
                             total_inputs.append(widget)
