@@ -2406,23 +2406,14 @@ with ui.navset_card_tab(id="main_tabs"):
                 cols = [c for c in COMPONENT_COLS if c in df.columns]
                 if not cols: return go.Figure()
                 _, _, delta = first_last_per_facility(df, cols)
-                delta.columns = [labels.get(c, c) for c in delta.columns]
+                delta.columns = [labels.get(c,c) for c in delta.columns]
                 vmax = max(abs(float(delta.values.min())), abs(float(delta.values.max())), 1)
                 fig = px.imshow(delta, color_continuous_scale="RdYlGn",
                                 zmin=-vmax, zmax=vmax, aspect="auto",
                                 labels=dict(color="Δ " + t("col_score")), text_auto=".0f")
-                fig.update_layout(
-                    margin=dict(l=10, r=10, t=50, b=10),     # was t=30 — bumped for the new colorbar
-                    height=max(400, len(delta) * 28 + 150),  # was +150
-                    xaxis_title="", yaxis_title="",
-                    coloraxis_colorbar=dict(                 # NEW
-                        orientation="h",
-                        thickness=14,
-                        len=0.55,                            # fixed at 55% of plot width
-                        xanchor="center", x=0.5,
-                        yanchor="bottom", y=1.02,            # sits just above the heatmap
-                    ),
-                )
+                fig.update_layout(margin=dict(l=10,r=10,t=30,b=10),
+                                  height=max(400, len(delta)*28 + 150),
+                                  xaxis_title="", yaxis_title="")
                 fig.update_xaxes(tickangle=-45)
                 return fig
 
