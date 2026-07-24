@@ -19,9 +19,9 @@ SYNC_BASE_URL = "https://raw.githubusercontent.com/smanninformatics/ipc_rat_dash
 # Must match the "name" values in partitions.json
 SYNC_PARTITIONS = {    
     "national":  "National (all provinces)",    
-    "ituri":     "Ituri",    
-    "nord-kivu": "Nord-Kivu",    
-    "sud-kivu":  "Sud-Kivu",
+    #"ituri":     "Ituri",    
+    #"nord-kivu": "Nord-Kivu",    
+    #"sud-kivu":  "Sud-Kivu",
     }
 
 # Link to manifest for native cache deployment
@@ -1759,7 +1759,7 @@ with ui.sidebar(width=380, open="open"):
                     "csv":        "📄 CSV Upload (Standard)",
                     "csv_custom": "🔧 CSV Upload (Custom Mapping)",
                     "kobo_sync":  "🔄 Kobo (Auto-synced)",
-                    "kobo":       "🌐 KoboToolbox API",
+                    #"kobo":       "🌐 KoboToolbox API",
                 },
                 selected="csv",
             )
