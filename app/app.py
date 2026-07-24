@@ -1366,96 +1366,102 @@ async def _load_kobo_sync():
 # ----- Reactive effect: re-translate all input labels & choices on language change
 @reactive.effect
 def _retranslate_inputs():
-    _ = input.language()  # take dependency
-    cl = component_labels()
-    try:
-        ui.update_radio_buttons("source", choices={
-            "csv":        t("csv_standard"),
-            "csv_custom": t("csv_custom"),
-            "kobo_sync":  t("kobo_sync"),
-            "kobo":       t("kobo_api"),
-        })
-    except Exception: pass
-    
-    try: ui.update_select("sync_partition", 
-    label=t("sync_partition"))    
-    except Exception: pass    
-    try: ui.update_text("sync_passphrase", 
-    label=t("sync_passphrase"))    
-    except Exception: pass    
-    try: ui.update_action_button("kobo_sync_load", 
-    label=t("sync_load"))    
-    except Exception: pass
-    try:
-        ui.update_radio_buttons("x_axis", label=t("time_axis"), choices={
-            "date": t("reporting_date"),
-            "days": t("days_since_baseline"),
-            "num":  t("assessment_num"),
-        })
-    except Exception: pass
+    _ = input.language()                 # the ONLY reactive dependency
+    with reactive.isolate():             # read current values w/o depending on them
+        cl = component_labels()
 
-    for input_id, key in [
-        ("facilities", "facilities"),
-        ("components", "components"),
-        ("critical_components", "critical_components"),
-        ("detail_facility", "facility_inspect"),
-        ("detail_assessment", "specific_assessment"),
-        ("province", "province"),
-        ("district", "district"),          # NEW
-        ("subdistrict", "subdistrict"),
-        ("level", "level"),
-    ]:
-        try: ui.update_selectize(input_id, label=t(key))
+        try:
+            ui.update_radio_buttons("source", choices={
+                "csv":        t("csv_standard"),
+                "csv_custom": t("csv_custom"),
+                "kobo_sync":  t("kobo_sync"),
+                "kobo":       t("kobo_api"),
+            }, selected=input.source())
         except Exception: pass
 
-    try: ui.update_select("language", label=t("language_label"))
-    except Exception: pass
-
-    for input_id, key in [
-        ("kobo_url", "kobo_url"),
-        ("kobo_asset", "asset_uid"),
-        ("kobo_token", "api_token"),
-    ]:
-        try: ui.update_text(input_id, label=t(key))
+        try:
+            ui.update_radio_buttons("x_axis", label=t("time_axis"), choices={
+                "date": t("reporting_date"),
+                "days": t("days_since_baseline"),
+                "num":  t("assessment_num"),
+            }, selected=input.x_axis())
         except Exception: pass
-    
-    try:
-        ui.update_radio_buttons(
-            "trend_filter",
-            label=t("trend_filter_label"),
-            choices={"all": t("trend_all"), "up": t("trend_up"),
-                     "down": t("trend_down"), "flat": t("trend_flat")},
-            selected=input.trend_filter(),
-        )
-    except Exception: pass
 
-    try: ui.update_action_button("kobo_fetch", label=t("fetch_data"))
-    except Exception: pass
-    try: ui.update_action_button("apply_mapping", label=t("apply_mapping"))
-    except Exception: pass
-    # Checkbox
-    try: ui.update_checkbox("use_custom_baseline", label=t("use_custom_baseline"))
-    except Exception: pass
-    
-    # Date input
-    try: ui.update_date("baseline_date", label=t("baseline_date_label"))
-    except Exception: pass
+        for input_id, key in [
+            ("facilities", "facilities"),
+            ("critical_components", "critical_components"),
+            ("detail_facility", "facility_inspect"),
+            ("detail_assessment", "specific_assessment"),
+            ("province", "province"),
+            ("district", "district"),
+            ("subdistrict", "subdistrict"),
+            ("level", "level"),
+        ]:
+            try: ui.update_selectize(input_id, label=t(key))
+            except Exception: pass
 
-    try: ui.update_date("start_date", label=t("start_date_label"))
-    except Exception: pass
-    
-    # Slider
-    try: ui.update_slider("baseline_buffer_weeks", label=t("buffer_weeks_label"))
-    except Exception: pass
+        try: ui.update_select("language", label=t("language_label"))
+        except Exception: pass
 
-    #Critical Component Translate
-    try:
-        ui.update_selectize(
-            "critical_components",
-            choices={c: cl[c] for c in COMPONENT_COLS},
-            selected=list(input.critical_components() or []),
-        )
-    except Exception: pass
+        for input_id, key in [
+            ("kobo_url", "kobo_url"),
+            ("kobo_asset", "asset_uid"),
+            ("kobo_token", "api_token"),
+        ]:
+            try: ui.update_text(input_id, label=t(key))
+            except Exception: pass
+
+        try:
+            ui.update_radio_buttons(
+                "trend_filter", label=t("trend_filter_label"),
+                choices={"all": t("trend_all"), "up": t("trend_up"),
+                         "down": t("trend_down"), "flat": t("trend_flat")},
+                selected=input.trend_filter())
+        except Exception: pass
+
+        # If you added the large-network display modes:
+        try:
+            ui.update_radio_buttons("traj_mode", choices={
+                "band": t("traj_band"), "province": t("traj_by_province"),
+                "district": t("traj_by_district"),
+                "individual": t("traj_individual"),
+            }, selected=input.traj_mode())
+        except Exception: pass
+        try:
+            ui.update_radio_buttons("heatmap_level", choices={
+                "province": t("province"), "district": t("district"),
+                "subdistrict": t("subdistrict"), "facility": t("hm_facility"),
+            }, selected=input.heatmap_level())
+        except Exception: pass
+
+        try: ui.update_action_button("kobo_fetch", label=t("fetch_data"))
+        except Exception: pass
+        try: ui.update_action_button("apply_mapping", label=t("apply_mapping"))
+        except Exception: pass
+        try: ui.update_checkbox("use_custom_baseline", label=t("use_custom_baseline"))
+        except Exception: pass
+        try: ui.update_date("baseline_date", label=t("baseline_date_label"))
+        except Exception: pass
+        try: ui.update_date("start_date", label=t("start_date_label"))
+        except Exception: pass
+        try: ui.update_slider("baseline_buffer_weeks", label=t("buffer_weeks_label"))
+        except Exception: pass
+
+        # Sync panel labels
+        try: ui.update_select("sync_partition", label=t("sync_partition"))
+        except Exception: pass
+        try: ui.update_text("sync_passphrase", label=t("sync_passphrase"))
+        except Exception: pass
+        try: ui.update_action_button("kobo_sync_load", label=t("sync_load"))
+        except Exception: pass
+
+        try:
+            ui.update_selectize(
+                "critical_components",
+                choices={c: cl[c] for c in COMPONENT_COLS},
+                selected=list(input.critical_components() or []),
+            )
+        except Exception: pass
 
 
 # =====================================================================
