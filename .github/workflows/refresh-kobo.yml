@@ -2,7 +2,7 @@ name: Refresh Kobo Data
 
 on:
   schedule:
-    - cron: '0 */6 * * *'      # every 6 hours — adjust to assessment cadence
+    - cron: '23 */6 * * *'     # Runs at 23 minutes past the hour, every 6 hours — adjust to assessment cadence
   workflow_dispatch:             # manual trigger from the Actions tab
 
 permissions:
