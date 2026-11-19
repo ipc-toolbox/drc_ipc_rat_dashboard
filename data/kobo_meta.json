@@ -1,10 +1,10 @@
 {
-  "fetched_at": "2026-11-19T07:37:43+00:00",
+  "fetched_at": "2026-11-19T20:47:33+00:00",
   "partitions": {
     "national": {
       "status": "updated",
-      "records": 4409,
-      "size_kb": 1519.4
+      "records": 4428,
+      "size_kb": 1525.7
     },
     "ituri": {
       "status": "skipped-missing-secrets"
